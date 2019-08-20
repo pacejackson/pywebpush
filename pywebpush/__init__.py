@@ -270,8 +270,44 @@ class WebPusher:
         return ("""curl -vX POST {url} \\\n{headers}{data}""".format(
             url=endpoint, headers="".join(header_list), data=data))
 
+    def _create_vapid_headers(self, private_key, claims):
+        assert private_key and claims
+        vapid_headers = None
+        if self.verbose:
+            print("Generating VAPID headers...")
+        if not claims.get('aud'):
+            url = urlparse(self.subscription_info.get("endpoint"))
+            aud = "{}://{}".format(url.scheme, url.netloc)
+            claims['aud'] = aud
+        # Remember, passed structures are mutable in python.
+        # It's possible that a previously set `exp` field is no longer valid.
+        if (not claims.get('exp')
+                or claims.get('exp') < int(time.time())):
+            # encryption lives for 12 hours
+            claims['exp'] = int(time.time()) + (12 * 60 * 60)
+            if self.verbose:
+                print("Setting VAPID expry to {}...".format(
+                    claims['exp']))
+        if isinstance(private_key, Vapid):
+            vv = private_key
+        elif os.path.isfile(private_key):
+            # Presume that key from file is handled correctly by
+            # py_vapid.
+            vv = Vapid.from_file(
+                private_key_file=private_key)  # pragma no cover
+        else:
+            vv = Vapid.from_string(private_key=private_key)
+        if self.verbose:
+            print("\t claims: {}".format(claims))
+        vapid_headers = vv.sign(claims)
+        if self.verbose:
+            print("\t headers: {}".format(vapid_headers))
+        return vapid_headers
+
+
     def send(self, data=None, headers=None, ttl=0, gcm_key=None, reg_id=None,
-             content_encoding="aes128gcm", curl=False, timeout=None):
+             content_encoding="aes128gcm", curl=False, timeout=None,
+             vapid_private_key=None, vapid_claims=None):
         """Encode and send the data to the Push Service.
 
         :param data: A serialized block of data (see encode() ).
@@ -294,11 +330,23 @@ class WebPusher:
         :type curl: bool
         :param timeout: POST requests timeout
         :type timeout: float or tuple
+        :param vapid_private_key: Vapid instance or path to vapid private key PEM \
+                              or encoded str
+        :type vapid_private_key: Union[Vapid, str]
+        :param vapid_claims: Dictionary of claims ('sub' required)
+        :type vapid_claims: dict
 
         """
         # Encode the data.
         if headers is None:
             headers = dict()
+        if vapid_claims:
+            if not vapid_private_key:
+                raise WebPushException("VAPID dict missing 'private_key'")
+            vapid_headers = self._create_vapid_headers(
+                private_key=vapid_private_key, claims=vapid_claims
+            )
+            headers.update(vapid_headers)
         encoded = {}
         headers = CaseInsensitiveDict(headers)
         if data:
@@ -362,15 +410,18 @@ class WebPusher:
         # Authorization / Crypto-Key (VAPID headers)
         if curl:
             return self.as_curl(endpoint, encoded_data, headers)
+        return self._post(endpoint, encoded_data, headers, timeout)
+
+    def _post(self, endpoint, data, headers, timeout):
         self.verb("\nSending request to"
-                  "\n\thost: {}\n\theaders: {}\n\tdata: {}",
-                  endpoint, headers, encoded_data)
+                    "\n\thost: {}\n\theaders: {}\n\tdata: {}",
+                    endpoint, headers, data)
         resp = self.requests_method.post(endpoint,
-                                         data=encoded_data,
-                                         headers=headers,
-                                         timeout=timeout)
+                                        data=data,
+                                        headers=headers,
+                                        timeout=timeout)
         self.verb("\nResponse:\n\tcode: {}\n\tbody: {}\n",
-                  resp.status_code, resp.text or "Empty")
+                resp.status_code, resp.text or "Empty")
         return resp
 
 
@@ -429,47 +480,14 @@ def webpush(subscription_info,
     :return requests.Response or string
 
     """
-    vapid_headers = None
-    if vapid_claims:
-        if verbose:
-            print("Generating VAPID headers...")
-        if not vapid_claims.get('aud'):
-            url = urlparse(subscription_info.get('endpoint'))
-            aud = "{}://{}".format(url.scheme, url.netloc)
-            vapid_claims['aud'] = aud
-        # Remember, passed structures are mutable in python.
-        # It's possible that a previously set `exp` field is no longer valid.
-        if (not vapid_claims.get('exp')
-                or vapid_claims.get('exp') < int(time.time())):
-            # encryption lives for 12 hours
-            vapid_claims['exp'] = int(time.time()) + (12 * 60 * 60)
-            if verbose:
-                print("Setting VAPID expry to {}...".format(
-                    vapid_claims['exp']))
-        if not vapid_private_key:
-            raise WebPushException("VAPID dict missing 'private_key'")
-        if isinstance(vapid_private_key, Vapid):
-            vv = vapid_private_key
-        elif os.path.isfile(vapid_private_key):
-            # Presume that key from file is handled correctly by
-            # py_vapid.
-            vv = Vapid.from_file(
-                private_key_file=vapid_private_key)  # pragma no cover
-        else:
-            vv = Vapid.from_string(private_key=vapid_private_key)
-        if verbose:
-            print("\t claims: {}".format(vapid_claims))
-        vapid_headers = vv.sign(vapid_claims)
-        if verbose:
-            print("\t headers: {}".format(vapid_headers))
-
     response = WebPusher(subscription_info, verbose=verbose).send(
         data,
-        vapid_headers,
         ttl=ttl,
         content_encoding=content_encoding,
         curl=curl,
         timeout=timeout,
+        vapid_claims=vapid_claims,
+        vapid_private_key=vapid_private_key,
     )
     if not curl and response.status_code > 202:
         raise WebPushException("Push failed: {} {}\nResponse body:{}".format(

@@ -174,10 +174,10 @@ class WebpushTestCase(unittest.TestCase):
         ok_('dh=' in ckey)
         eq_(pheaders.get('content-encoding'), 'aesgcm')
 
-    @patch.object(WebPusher, "send")
+    @patch.object(WebPusher, "_post")
     @patch.object(py_vapid.Vapid, "sign")
-    def test_webpush_vapid_instance(self, vapid_sign, pusher_send):
-        pusher_send.return_value.status_code = 200
+    def test_webpush_vapid_instance(self, vapid_sign, pusher_post_request):
+        pusher_post_request.return_value.status_code = 200
         subscription_info = self._gen_subscription_info()
         data = "Mary had a little lamb"
         vapid_key = py_vapid.Vapid.from_string(self.vapid_key)
@@ -189,12 +189,12 @@ class WebpushTestCase(unittest.TestCase):
             vapid_claims=claims,
         )
         vapid_sign.assert_called_once_with(claims)
-        pusher_send.assert_called_once()
+        pusher_post_request.assert_called_once()
 
-    @patch.object(WebPusher, "send")
+    @patch.object(WebPusher, "_post")
     @patch.object(py_vapid.Vapid, "sign")
-    def test_webpush_vapid_exp(self, vapid_sign, pusher_send):
-        pusher_send.return_value.status_code = 200
+    def test_webpush_vapid_exp(self, vapid_sign, pusher_post_request):
+        pusher_post_request.return_value.status_code = 200
         subscription_info = self._gen_subscription_info()
         data = "Mary had a little lamb"
         vapid_key = py_vapid.Vapid.from_string(self.vapid_key)
@@ -208,7 +208,7 @@ class WebpushTestCase(unittest.TestCase):
             vapid_claims=claims,
         )
         vapid_sign.assert_called_once_with(claims)
-        pusher_send.assert_called_once()
+        pusher_post_request.assert_called_once()
         ok_(claims['exp'] > int(time.time()))
 
     @patch("requests.post")
